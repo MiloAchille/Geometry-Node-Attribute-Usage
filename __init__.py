@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Geometry Node Attribute Usage",
-    "author": "Custom",
+    "author": "Baptiste Mollicone",
     "version": (1, 0, 0),
     "blender": (5, 2, 0),
     "location": "Properties > Object > Geometry Node Attribute Usage",

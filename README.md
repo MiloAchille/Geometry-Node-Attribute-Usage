@@ -98,4 +98,4 @@ to instantly apply that value to the search filter.
 
 ## License
 
-Use the same license as this repository/project.
+MIT. See `LICENSE`.
