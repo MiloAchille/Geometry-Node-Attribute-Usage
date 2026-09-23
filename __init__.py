@@ -4,7 +4,7 @@ bl_info = {
     "version": (1, 1, 1),
     "blender": (5, 2, 0),
     "location": "Properties > Object > Geometry Node Attribute Usage",
-    "description": "Scans geometry node modifiers and reports all string/attribute usages with frequency analysis",
+    "description": "Scans geometry node modifiers for named attribute READ/WRITE usage, with inclusive mode filters and tree-order sorting (first write / first read)",
     "category": "Object",
 }
 

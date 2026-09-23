@@ -6,6 +6,8 @@ Blender addon that scans Geometry Nodes modifiers to find **named attribute stri
 
 It is designed for large node setups with nested custom groups.
 
+**New:** sort and filter by **tree order** — walk attributes by first write, first read, or first appearance (left → right in the node tree, including nested groups).
+
 ## What It Does
 
 - Scans Geometry Nodes modifiers on:
@@ -25,8 +27,11 @@ It is designed for large node setups with nested custom groups.
 - Reports whether each attribute is:
   - **Read only**
   - **Write only**
-  - **Read & Write** (still shown as a badge; filter treats these as belonging to both Read and Write)
-- Provides sorting and filtering options.
+  - **Read & Write** (badge only; Mode filter is inclusive — those attrs appear under both Read and Write)
+- Sort / filter by **tree order**:
+  - first write, first read, first appearance, or first write + first read
+  - `#N` visit index on hits so you can follow attribute lifecycle in flow order
+- Provides additional sorting (count, name, mode) and text search.
 
 ## UI Location
 
@@ -64,7 +69,7 @@ Each scan updates the attribute usage list and statistics.
   - Count ascending (least used first)
   - Name A-Z
   - Name Z-A
-  - Mode grouping
+  - Mode grouping (write-used first, then read-only)
   - Tree order (left → right visit order, diving into groups)
 
 Tree order uses node X/Y layout (left-to-right), then enters nested groups when encountered. Each hit gets a `#N` index so you can step through attribute lifecycle in flow order.
