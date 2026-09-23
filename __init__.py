@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Geometry Node Attribute Usage",
     "author": "Baptiste Mollicone",
-    "version": (1, 0, 0),
+    "version": (1, 1, 1),
     "blender": (5, 2, 0),
     "location": "Properties > Object > Geometry Node Attribute Usage",
     "description": "Scans geometry node modifiers and reports all string/attribute usages with frequency analysis",

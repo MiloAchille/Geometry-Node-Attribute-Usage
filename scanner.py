@@ -7,7 +7,6 @@ and collects every attribute name used in:
 
 from __future__ import annotations
 import bpy
-from collections import defaultdict
 from dataclasses import dataclass, field
 
 
@@ -26,6 +25,7 @@ class AttributeHit:
     node_name: str
     modifier_name: str
     object_name: str
+    order: int = 0      # 1-based visit order in the tree (left→right, into groups)
 
 
 @dataclass
@@ -55,6 +55,19 @@ class ScanResult:
     def sorted_names(self) -> list[str]:
         """Unique names sorted by total hit count, descending."""
         return sorted(self.unique_names(), key=lambda n: self.count_for(n), reverse=True)
+
+    def first_hit(self, name: str, mode: str | None = None) -> AttributeHit | None:
+        """Earliest hit for an attribute, optionally restricted to READ/WRITE."""
+        hits = self.hits_for(name)
+        if mode is not None:
+            hits = [h for h in hits if h.mode == mode]
+        if not hits:
+            return None
+        return min(hits, key=lambda h: h.order)
+
+    def first_order(self, name: str, mode: str | None = None) -> int:
+        hit = self.first_hit(name, mode)
+        return hit.order if hit is not None else 10**9
 
 
 # ---------------------------------------------------------------------------
@@ -264,12 +277,24 @@ def resolve_first_string_input(
     return None, None
 
 
+def _nodes_in_tree_order(tree: bpy.types.NodeTree) -> list:
+    """
+    Approximate evaluation / reading order: left → right, then top → bottom.
+    Geometry Nodes trees are almost always laid out this way.
+    """
+    return sorted(
+        tree.nodes,
+        key=lambda n: (n.location.x, -n.location.y, n.name),
+    )
+
+
 def _walk_tree(
     tree: bpy.types.NodeTree,
     modifier_name: str,
     object_name: str,
     visited: set[str],
     result: ScanResult,
+    order_counter: list[int],
     parent_stack: list | None = None,
 ) -> None:
     if tree.name in visited:
@@ -279,10 +304,11 @@ def _walk_tree(
     if parent_stack is None:
         parent_stack = []
 
-    for node in tree.nodes:
+    for node in _nodes_in_tree_order(tree):
         if node.bl_idname == READ_NODE:
             name = _get_attribute_name_from_node(node, tree, parent_stack)
             if name:
+                order_counter[0] += 1
                 result.hits.append(AttributeHit(
                     attribute_name=name,
                     mode="READ",
@@ -290,11 +316,13 @@ def _walk_tree(
                     node_name=node.name,
                     modifier_name=modifier_name,
                     object_name=object_name,
+                    order=order_counter[0],
                 ))
 
         elif node.bl_idname == WRITE_NODE:
             name = _get_attribute_name_from_node(node, tree, parent_stack)
             if name:
+                order_counter[0] += 1
                 result.hits.append(AttributeHit(
                     attribute_name=name,
                     mode="WRITE",
@@ -302,6 +330,7 @@ def _walk_tree(
                     node_name=node.name,
                     modifier_name=modifier_name,
                     object_name=object_name,
+                    order=order_counter[0],
                 ))
 
         # Recurse into group nodes, extending the parent stack
@@ -312,6 +341,7 @@ def _walk_tree(
                 object_name,
                 visited,
                 result,
+                order_counter,
                 parent_stack + [(tree, node)],
             )
 
@@ -324,23 +354,29 @@ def scan_modifier(obj: bpy.types.Object, mod: bpy.types.NodesModifier) -> ScanRe
     result = ScanResult()
     if mod.node_group is None:
         return result
-    _walk_tree(mod.node_group, mod.name, obj.name, set(), result)
+    _walk_tree(mod.node_group, mod.name, obj.name, set(), result, order_counter=[0])
     return result
 
 
 def scan_object(obj: bpy.types.Object) -> ScanResult:
     combined = ScanResult()
+    # One continuous order across modifiers on the same object (stack top→bottom).
+    order_counter = [0]
     for mod in obj.modifiers:
-        if mod.type == "NODES":
-            partial = scan_modifier(obj, mod)
-            combined.hits.extend(partial.hits)
+        if mod.type == "NODES" and mod.node_group is not None:
+            _walk_tree(mod.node_group, mod.name, obj.name, set(), combined, order_counter)
     return combined
 
 
 def scan_scene(context: bpy.types.Context, selected_only: bool = False) -> ScanResult:
     combined = ScanResult()
     objects = context.selected_objects if selected_only else context.scene.objects
+    # One continuous order across the whole scan (objects → modifiers → trees).
+    order_counter = [0]
     for obj in objects:
-        partial = scan_object(obj)
-        combined.hits.extend(partial.hits)
+        for mod in obj.modifiers:
+            if mod.type == "NODES" and mod.node_group is not None:
+                _walk_tree(
+                    mod.node_group, mod.name, obj.name, set(), combined, order_counter,
+                )
     return combined

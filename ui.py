@@ -29,7 +29,13 @@ def _mode_key(modes: set[str]) -> str:
 # Sorting
 # ---------------------------------------------------------------------------
 
-def _apply_sort(names: list[str], result: scanner.ScanResult, sort_mode: str) -> list[str]:
+def _apply_sort(
+    names: list[str],
+    result: scanner.ScanResult,
+    sort_mode: str,
+    hits_filter: str,
+    show_mode: str,
+) -> list[str]:
     if sort_mode == "COUNT_DESC":
         return sorted(names, key=lambda n: result.count_for(n), reverse=True)
     if sort_mode == "COUNT_ASC":
@@ -39,9 +45,53 @@ def _apply_sort(names: list[str], result: scanner.ScanResult, sort_mode: str) ->
     if sort_mode == "NAME_ZA":
         return sorted(names, reverse=True)
     if sort_mode == "MODE":
-        order = {"BOTH": 0, "WRITE": 1, "READ": 2}
-        return sorted(names, key=lambda n: order[_mode_key(result.modes_for(n))])
+        # Written attrs (with or without reads) first, then read-only.
+        return sorted(names, key=lambda n: 0 if "WRITE" in result.modes_for(n) else 1)
+    if sort_mode == "TREE_ORDER":
+        # Prefer Hits filter, else Mode filter, else earliest hit of any kind.
+        mode = None
+        if hits_filter == "FIRST_WRITE":
+            mode = "WRITE"
+        elif hits_filter == "FIRST_READ":
+            mode = "READ"
+        elif show_mode in ("WRITE", "READ"):
+            mode = show_mode
+        return sorted(names, key=lambda n: result.first_order(n, mode))
     return names
+
+
+def _filter_hits_for_attr(
+    result: scanner.ScanResult,
+    attr_name: str,
+    hits_filter: str,
+    show_mode: str,
+) -> list[scanner.AttributeHit]:
+    """Apply Hits + Mode filters to the nodes shown under an attribute."""
+    if hits_filter == "FIRST_WRITE":
+        hit = result.first_hit(attr_name, "WRITE")
+        return [hit] if hit is not None else []
+    if hits_filter == "FIRST_READ":
+        hit = result.first_hit(attr_name, "READ")
+        return [hit] if hit is not None else []
+    if hits_filter == "FIRST_ANY":
+        mode = show_mode if show_mode in ("WRITE", "READ") else None
+        hit = result.first_hit(attr_name, mode)
+        return [hit] if hit is not None else []
+    if hits_filter == "FIRST_EACH":
+        modes = ("WRITE", "READ")
+        if show_mode in ("WRITE", "READ"):
+            modes = (show_mode,)
+        shown = []
+        for mode in modes:
+            hit = result.first_hit(attr_name, mode)
+            if hit is not None:
+                shown.append(hit)
+        return sorted(shown, key=lambda h: h.order)
+
+    hits = result.hits_for(attr_name)
+    if show_mode in ("WRITE", "READ"):
+        hits = [h for h in hits if h.mode == show_mode]
+    return hits
 
 
 # ---------------------------------------------------------------------------
@@ -51,37 +101,65 @@ def _apply_sort(names: list[str], result: scanner.ScanResult, sort_mode: str) ->
 def _draw_results(layout: bpy.types.UILayout, result: scanner.ScanResult, wm) -> None:
     filter_text = wm.gnau_filter_text
     sort_mode   = wm.gnau_sort_mode
-    show_mode   = wm.gnau_filter_mode   # "ALL" | "READ" | "WRITE" | "BOTH"
+    show_mode   = wm.gnau_filter_mode   # "ALL" | "READ" | "WRITE"
+    hits_filter = wm.gnau_hits_filter   # "ALL" | "FIRST_*"
 
     names = result.unique_names()
 
-    # Mode filter
-    if show_mode != "ALL":
-        names = [n for n in names if _mode_key(result.modes_for(n)) == show_mode]
+    # Mode filter: include attrs that *have* that access (not exclusive buckets).
+    # An attr used for both read and write appears under Read AND under Write.
+    if show_mode == "READ":
+        names = [n for n in names if "READ" in result.modes_for(n)]
+    elif show_mode == "WRITE":
+        names = [n for n in names if "WRITE" in result.modes_for(n)]
+
+    # Hits filter: drop attrs that have no matching first hit
+    if hits_filter == "FIRST_WRITE":
+        names = [n for n in names if result.first_hit(n, "WRITE") is not None]
+    elif hits_filter == "FIRST_READ":
+        names = [n for n in names if result.first_hit(n, "READ") is not None]
 
     # Text filter
     if filter_text:
         names = [n for n in names if filter_text.lower() in n.lower()]
 
     # Sort
-    names = _apply_sort(names, result, sort_mode)
+    names = _apply_sort(names, result, sort_mode, hits_filter, show_mode)
 
     if not names:
         layout.label(text="No results match the current filter.", icon="INFO")
         return
 
-    total_shown = sum(result.count_for(n) for n in names)
-    layout.label(
-        text=f"{len(names)} attributes  ·  {total_shown} nodes",
-        icon="OUTLINER_DATA_FONT",
+    shown_hits = sum(
+        len(_filter_hits_for_attr(result, n, hits_filter, show_mode)) for n in names
     )
+    total_hits = sum(result.count_for(n) for n in names)
+    if hits_filter == "ALL" and show_mode == "ALL":
+        layout.label(
+            text=f"{len(names)} attributes  ·  {total_hits} nodes",
+            icon="OUTLINER_DATA_FONT",
+        )
+    else:
+        layout.label(
+            text=f"{len(names)} attributes  ·  {shown_hits} shown / {total_hits} total",
+            icon="OUTLINER_DATA_FONT",
+        )
     layout.separator(factor=0.3)
 
+    show_order = sort_mode == "TREE_ORDER" or hits_filter != "ALL" or show_mode != "ALL"
+
     for attr_name in names:
-        hits  = result.hits_for(attr_name)
+        hits  = _filter_hits_for_attr(result, attr_name, hits_filter, show_mode)
         modes = result.modes_for(attr_name)
         mkey  = _mode_key(modes)
-        count = len(hits)
+        count = result.count_for(attr_name)
+        # Header order badge: first hit of the mode you're currently targeting.
+        order_mode = None
+        if hits_filter == "FIRST_WRITE" or show_mode == "WRITE":
+            order_mode = "WRITE"
+        elif hits_filter == "FIRST_READ" or show_mode == "READ":
+            order_mode = "READ"
+        first = result.first_hit(attr_name, order_mode) or result.first_hit(attr_name)
 
         box = layout.box()
         col = box.column(align=True)
@@ -90,10 +168,16 @@ def _draw_results(layout: bpy.types.UILayout, result: scanner.ScanResult, wm) ->
         header = col.row(align=True)
         header.alert = (mkey == "WRITE")
         header.label(text="", icon=_MODE_ICON[mkey])
-        header.label(text=f'"{attr_name}"')
+        if show_order and first is not None:
+            header.label(text=f'#{first.order}  "{attr_name}"')
+        else:
+            header.label(text=f'"{attr_name}"')
         right = header.row()
         right.alignment = "RIGHT"
-        right.label(text=f"× {count}  {_MODE_LABEL[mkey]}")
+        if hits_filter == "ALL" and show_mode == "ALL":
+            right.label(text=f"× {count}  {_MODE_LABEL[mkey]}")
+        else:
+            right.label(text=f"{_MODE_LABEL[mkey]}  (× {count})")
 
         # Per-hit rows: object › modifier › tree › node [focus button]
         obj_map: dict = {}
@@ -115,17 +199,14 @@ def _draw_results(layout: bpy.types.UILayout, result: scanner.ScanResult, wm) ->
                     tr.scale_y = 0.7
                     tr.label(text=f"    {tree_name}", icon="NODETREE")
 
-                    for h in tree_hits:
+                    for h in sorted(tree_hits, key=lambda x: x.order):
                         nr = col.row(align=True)
                         nr.scale_y = 0.75
 
                         icon = "HIDE_OFF" if h.mode == "READ" else "GREASEPENCIL"
-                        nr.label(
-                            text=f"      {h.node_name}",
-                            icon=icon,
-                        )
+                        label = f"      #{h.order}  {h.node_name}" if show_order else f"      {h.node_name}"
+                        nr.label(text=label, icon=icon)
 
-                        # Focus button
                         op = nr.operator(
                             "gnau.focus_node",
                             text="",
@@ -204,6 +285,10 @@ class GNAU_PT_NodeEditor_Main(bpy.types.Panel):
         row = filter_box.row(align=True)
         row.label(text="Mode:")
         row.prop(wm, "gnau_filter_mode", expand=True)
+
+        row_hits = filter_box.row(align=True)
+        row_hits.label(text="Hits:")
+        row_hits.prop(wm, "gnau_hits_filter", text="")
 
         row2 = filter_box.row(align=True)
         row2.label(text="Sort:")
@@ -292,12 +377,23 @@ def _register_props():
     )
     bpy.types.WindowManager.gnau_filter_mode = bpy.props.EnumProperty(
         name="Mode Filter",
-        description="Show only attributes of a certain access mode",
+        description="Show attributes that have at least one hit of this kind (not exclusive)",
         items=[
-            ("ALL",   "All",   "Show all attributes",              "THREE_DOTS",   0),
-            ("READ",  "Read",  "Only read (Named Attribute)",      "HIDE_OFF",     1),
-            ("WRITE", "Write", "Only write (Store Named Attr.)",   "GREASEPENCIL", 2),
-            ("BOTH",  "Both",  "Only attrs used for read & write", "FILE_REFRESH", 3),
+            ("ALL",   "All",   "Show all attributes",                         "THREE_DOTS",   0),
+            ("READ",  "Read",  "Attrs with at least one Named Attribute",     "HIDE_OFF",     1),
+            ("WRITE", "Write", "Attrs with at least one Store Named Attr.",   "GREASEPENCIL", 2),
+        ],
+        default="ALL",
+    )
+    bpy.types.WindowManager.gnau_hits_filter = bpy.props.EnumProperty(
+        name="Hits Filter",
+        description="Show all node hits, or only the first occurrence(s) in tree order",
+        items=[
+            ("ALL",         "All hits",              "Show every Named / Store Named Attribute node"),
+            ("FIRST_WRITE", "First write only",      "Only the earliest Store Named Attribute per attr"),
+            ("FIRST_READ",  "First read only",       "Only the earliest Named Attribute per attr"),
+            ("FIRST_ANY",   "First appearance",      "Only the earliest hit of any kind per attr"),
+            ("FIRST_EACH",  "First write + first read", "Earliest write and earliest read per attr"),
         ],
         default="ALL",
     )
@@ -309,7 +405,8 @@ def _register_props():
             ("COUNT_ASC",  "Count ↑ (least used first)",  "Least used at the top"),
             ("NAME_AZ",    "Name A → Z",                  "Alphabetical ascending"),
             ("NAME_ZA",    "Name Z → A",                  "Alphabetical descending"),
-            ("MODE",       "Mode (Both, Write, Read)",    "Group by access mode"),
+            ("MODE",       "Mode (Write-used, Read-only)", "Written attrs first, then read-only"),
+            ("TREE_ORDER", "Tree order (first → last)",   "By left-to-right visit order in the node tree"),
         ],
         default="COUNT_DESC",
     )
@@ -328,6 +425,7 @@ def _register_props():
 def _unregister_props():
     del bpy.types.WindowManager.gnau_filter_text
     del bpy.types.WindowManager.gnau_filter_mode
+    del bpy.types.WindowManager.gnau_hits_filter
     del bpy.types.WindowManager.gnau_sort_mode
     del bpy.types.WindowManager.gnau_selected_node_string
     del bpy.types.WindowManager.gnau_selected_node_socket

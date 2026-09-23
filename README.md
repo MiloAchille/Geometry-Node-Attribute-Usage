@@ -25,7 +25,7 @@ It is designed for large node setups with nested custom groups.
 - Reports whether each attribute is:
   - **Read only**
   - **Write only**
-  - **Read & Write**
+  - **Read & Write** (still shown as a badge; filter treats these as belonging to both Read and Write)
 - Provides sorting and filtering options.
 
 ## UI Location
@@ -49,17 +49,25 @@ Each scan updates the attribute usage list and statistics.
 ### 2) Filter and Sort
 
 - Search bar with clear `X` button
-- Mode filter:
+- Mode filter (inclusive — an attr used for both appears under Read and Write):
   - All
-  - Read
-  - Write
-  - Both
+  - Read — has at least one Named Attribute
+  - Write — has at least one Store Named Attribute
+- Hits filter (tree order):
+  - All hits
+  - First write only — earliest `Store Named Attribute` per attribute
+  - First read only — earliest `Named Attribute` per attribute
+  - First appearance — earliest hit of any kind
+  - First write + first read — both earliest endpoints
 - Sort options:
   - Count descending (most used first)
   - Count ascending (least used first)
   - Name A-Z
   - Name Z-A
   - Mode grouping
+  - Tree order (left → right visit order, diving into groups)
+
+Tree order uses node X/Y layout (left-to-right), then enters nested groups when encountered. Each hit gets a `#N` index so you can step through attribute lifecycle in flow order.
 
 ### 3) Focus Result Node
 
